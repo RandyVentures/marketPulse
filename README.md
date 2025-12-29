@@ -35,6 +35,14 @@ See install steps in `macos/MarketPulseBar/README.md`.
 2) Unzip and move `MarketPulseBar.app` to `/Applications`.
 3) Open it (first run: right-click → Open).
 
+### Build the menu bar app from source
+
+```bash
+cd macos/MarketPulseBar
+swift build
+swift run
+```
+
 ## Data notes
 
 - Place manual CSVs in `~/.marketpulse/data/`.
