@@ -1,0 +1,24 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build app zip
+        run: |
+          chmod +x macos/MarketPulseBar/build_app.sh
+          macos/MarketPulseBar/build_app.sh
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: macos/MarketPulseBar/dist/MarketPulseBar.app.zip

@@ -60,3 +60,9 @@ Issues and PRs are welcome. For larger changes, please open an issue to discuss 
 
 - Python package versions live in `pyproject.toml`.
 - Swift app builds are published as GitHub Releases.
+- Create a release by pushing a tag, for example:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
