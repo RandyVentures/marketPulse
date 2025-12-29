@@ -9,6 +9,7 @@ APP_DIR="$ROOT_DIR/dist/$APP_NAME.app"
 rm -rf "$ROOT_DIR/dist"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
+cd "$ROOT_DIR"
 swift build -c release
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
