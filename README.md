@@ -43,6 +43,15 @@ swift build
 swift run
 ```
 
+### Troubleshooting (macOS)
+
+If macOS reports the app is "damaged", it is usually Gatekeeper quarantining an unsigned app.
+After moving the app to `/Applications`, run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/MarketPulseBar.app
+```
+
 ## Data notes
 
 - Place manual CSVs in `~/.marketpulse/data/`.
