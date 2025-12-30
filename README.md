@@ -28,6 +28,7 @@ marketpulse run
 
 Native SwiftUI menubar app lives in `macos/MarketPulseBar`.
 See install steps in `macos/MarketPulseBar/README.md`.
+![MarketPulseBar menu](docs/screenshots/marketpulsebar.png)
 
 ### Install the menu bar app
 
