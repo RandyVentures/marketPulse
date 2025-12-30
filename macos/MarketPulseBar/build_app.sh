@@ -12,6 +12,9 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cd "$ROOT_DIR"
 swift build -c release
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
+if [[ -f "$ROOT_DIR/Resources/MarketPulseBar.icns" ]]; then
+  cp "$ROOT_DIR/Resources/MarketPulseBar.icns" "$APP_DIR/Contents/Resources/MarketPulseBar.icns"
+fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -24,6 +27,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <string>com.marketpulse.$APP_NAME</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleIconFile</key>
+  <string>MarketPulseBar.icns</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
