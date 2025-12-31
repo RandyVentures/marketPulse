@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
-Personal market health terminal dashboard for macOS.
+Personal market health dashboard with CLI, macOS menu bar app, and iOS app.
 
 ## Quick start
 
@@ -24,25 +24,30 @@ marketpulse snapshot
 marketpulse run
 ```
 
-## Menu bar app (macOS)
+## Swift apps (macOS + iOS)
 
-Native SwiftUI menubar app lives in `macos/MarketPulseBar`.
-See install steps in `macos/MarketPulseBar/README.md`.
-![MarketPulseBar menu](docs/screenshots/marketpulsebar.png)
+Shared SwiftUI core + views live in `shared/MarketPulseShared` and are consumed by:
+- macOS menu bar app in `macos/MarketPulseBar`
+- iOS app in `ios/MarketPulseApp`
 
-### Install the menu bar app
+### Install the menu bar app (macOS)
 
 1) Download the latest `MarketPulseBar.app.zip` from GitHub Releases.
 2) Unzip and move `MarketPulseBar.app` to `/Applications`.
 3) Open it (first run: right-click → Open).
 
-### Build the menu bar app from source
+### Build the menu bar app from source (macOS)
 
 ```bash
 cd macos/MarketPulseBar
 swift build
 swift run
 ```
+
+### Run the iOS app (iOS)
+
+Open `ios/MarketPulseApp/MarketPulseApp.xcodeproj` in Xcode and run on a simulator or device.
+The iOS app fetches data from Stooq + FRED (network-only) and supports pull-to-refresh.
 
 ### Troubleshooting (macOS)
 

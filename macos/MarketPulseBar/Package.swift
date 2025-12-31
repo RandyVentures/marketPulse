@@ -8,9 +8,16 @@ let package = Package(
     platforms: [
         .macOS(.v13)
     ],
+    dependencies: [
+        .package(path: "../../shared/MarketPulseShared")
+    ],
     targets: [
         .executableTarget(
-            name: "MarketPulseBar"
+            name: "MarketPulseBar",
+            dependencies: [
+                "MarketPulseCore",
+                "MarketPulseUI"
+            ]
         ),
     ]
 )
