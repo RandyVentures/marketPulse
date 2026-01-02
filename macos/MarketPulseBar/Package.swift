@@ -15,8 +15,8 @@ let package = Package(
         .executableTarget(
             name: "MarketPulseBar",
             dependencies: [
-                "MarketPulseCore",
-                "MarketPulseUI"
+                .product(name: "MarketPulseCore", package: "MarketPulseShared"),
+                .product(name: "MarketPulseUI", package: "MarketPulseShared")
             ]
         ),
     ]
