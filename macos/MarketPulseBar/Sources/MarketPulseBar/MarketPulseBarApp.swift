@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import MarketPulseCore
 import MarketPulseUI
 import SwiftUI
@@ -12,6 +13,8 @@ struct MarketPulseBarApp: App {
         .homeDirectoryForCurrentUser
         .appendingPathComponent(".marketpulse")
         .appendingPathComponent("data")
+    private let notificationController: MarketPulseNotificationController
+    private let snapshotCancellable: AnyCancellable
 
     init() {
         let logsDir = FileManager.default
@@ -24,7 +27,15 @@ struct MarketPulseBarApp: App {
             logFileURL: logsDir.appendingPathComponent("MarketPulseBar.log")
         )
         let service = MarketPulseService(configuration: config, settings: MarketPulseSettings())
+        let notificationController = MarketPulseNotificationController()
         _service = StateObject(wrappedValue: service)
+        self.notificationController = notificationController
+        self.snapshotCancellable = service.$snapshot
+            .compactMap { $0 }
+            .sink { snapshot in
+                notificationController.consider(snapshot: snapshot)
+            }
+        notificationController.requestAuthorization()
         service.start()
     }
 

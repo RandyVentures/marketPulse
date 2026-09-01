@@ -108,6 +108,34 @@ public struct SnapshotSignalsView: View {
                 SignalRow(signal: signal(named: "VIX Regime"))
                 SignalRow(signal: signal(named: "RSP/SPY Breadth"))
             }
+            if !snapshot.dataHealth.isEmpty {
+                SectionCard(title: "Data Health") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(snapshot.dataHealth, id: \.label) { (health: MarketPulseDataHealth) in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(health.label)
+                                        .font(.caption)
+                                    Spacer()
+                                    Text(health.source)
+                                        .font(.caption2)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(health.isAvailable ? Color.secondary : Color.orange)
+                                }
+                                Text(dataSummary(for: health))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                if let note = health.note {
+                                    Text(note)
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if !snapshot.conflicts.isEmpty {
                 SectionCard(title: "Conflicts") {
                     VStack(alignment: .leading, spacing: 4) {
@@ -127,6 +155,13 @@ public struct SnapshotSignalsView: View {
 
     private func signal(named name: String) -> Signal {
         snapshot.signals.first { $0.name == name } ?? Signal(name: name, vote: .na, detail: "N/A")
+    }
+
+    private func dataSummary(for health: MarketPulseDataHealth) -> String {
+        guard health.isAvailable else { return "No usable data" }
+        let rows = "\(health.rowCount) rows"
+        guard let lastDate = health.lastDate else { return rows }
+        return "\(rows) through \(lastDate)"
     }
 }
 

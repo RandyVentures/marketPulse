@@ -8,7 +8,8 @@ public final class MarketPulseEngine {
         rsp: [PriceBar],
         vix: [VixPoint],
         breadth: [BreadthPoint]?,
-        thresholds: MarketPulseThresholds = .default
+        thresholds: MarketPulseThresholds = .default,
+        dataHealth: [MarketPulseDataHealth] = []
     ) -> MarketPulseSnapshot {
         let weekly = weeklySeries(prices: spy)
         let weeklyClose = weekly.map { $0.close }
@@ -118,7 +119,15 @@ public final class MarketPulseEngine {
         ]
 
         let conflicts = detectConflicts(signals)
-        return MarketPulseSnapshot(asOf: asOf, score: score, label: label, signals: signals, conflicts: conflicts, extras: extras)
+        return MarketPulseSnapshot(
+            asOf: asOf,
+            score: score,
+            label: label,
+            signals: signals,
+            conflicts: conflicts,
+            extras: extras,
+            dataHealth: dataHealth
+        )
     }
 
     private func weeklySeries(prices: [PriceBar]) -> [PriceBar] {

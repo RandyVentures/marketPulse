@@ -146,6 +146,103 @@ final class MarketPulseEngineTests: XCTestCase {
     }
 }
 
+final class MarketPulseSnapshotTests: XCTestCase {
+    func testCodableRoundTripPreservesDataHealth() throws {
+        let snapshot = MarketPulseSnapshot(
+            asOf: "2024-01-03",
+            score: 75,
+            label: .bull,
+            signals: [Signal(name: "Weekly MACD", vote: .bull, detail: "MACD 1.0 vs signal 0.5")],
+            conflicts: ["Trend bullish but breadth weakening"],
+            extras: ["vix": "15.00"],
+            dataHealth: [
+                MarketPulseDataHealth(
+                    label: "SPY prices",
+                    source: "Local CSV",
+                    rowCount: 42,
+                    lastDate: "2024-01-03"
+                )
+            ]
+        )
+
+        let decoded = try JSONDecoder().decode(
+            MarketPulseSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+
+        XCTAssertEqual(decoded.asOf, snapshot.asOf)
+        XCTAssertEqual(decoded.score, snapshot.score)
+        XCTAssertEqual(decoded.label, snapshot.label)
+        XCTAssertEqual(decoded.conflicts, snapshot.conflicts)
+        XCTAssertEqual(decoded.extras, snapshot.extras)
+        XCTAssertEqual(decoded.dataHealth, snapshot.dataHealth)
+        XCTAssertEqual(decoded.signals.first?.name, snapshot.signals.first?.name)
+        XCTAssertEqual(decoded.signals.first?.vote, snapshot.signals.first?.vote)
+    }
+
+    func testDecodesLegacySnapshotWithoutDataHealth() throws {
+        let json = """
+        {
+          "asOf": "2024-01-03",
+          "score": 50,
+          "label": "NEUTRAL",
+          "signals": [{"name": "Weekly MACD", "vote": "NEUTRAL", "detail": "n/a"}],
+          "conflicts": [],
+          "extras": {}
+        }
+        """
+
+        let snapshot = try JSONDecoder().decode(
+            MarketPulseSnapshot.self,
+            from: Data(json.utf8)
+        )
+
+        XCTAssertTrue(snapshot.dataHealth.isEmpty)
+        XCTAssertEqual(snapshot.signals.first?.name, "Weekly MACD")
+    }
+}
+
+@MainActor
+final class MarketPulseServiceTests: XCTestCase {
+    func testRestoresPersistedSnapshotAsCached() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MarketPulseCoreTests-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("snapshot.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let snapshot = MarketPulseSnapshot(
+            asOf: "2024-01-03",
+            score: 50,
+            label: .neutral,
+            signals: [],
+            conflicts: [],
+            extras: [:],
+            dataHealth: [MarketPulseDataHealth(label: "VIX", source: "FRED", rowCount: 1)]
+        )
+        struct PersistedState: Codable {
+            let snapshot: MarketPulseSnapshot
+            let lastUpdated: Date
+        }
+        let lastUpdated = Date(timeIntervalSinceNow: -120)
+        let state = PersistedState(snapshot: snapshot, lastUpdated: lastUpdated)
+        try JSONEncoder().encode(state).write(to: snapshotURL)
+
+        let defaultsName = "MarketPulseCoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsName)!
+        defer { defaults.removePersistentDomain(forName: defaultsName) }
+        let service = MarketPulseService(
+            configuration: MarketPulseConfiguration(snapshotFileURL: snapshotURL),
+            settings: MarketPulseSettings(defaults: defaults)
+        )
+
+        XCTAssertEqual(service.snapshot?.asOf, "2024-01-03")
+        XCTAssertEqual(service.snapshot?.dataHealth.first?.source, "FRED")
+        XCTAssertEqual(service.statusMessage, "Cached")
+        XCTAssertEqual(service.lastUpdated?.timeIntervalSince1970 ?? 0, lastUpdated.timeIntervalSince1970, accuracy: 0.001)
+    }
+}
+
 final class MarketDataFetcherTests: XCTestCase {
     private let fetcher = MarketDataFetcher()
 
@@ -218,6 +315,27 @@ final class MarketDataFetcherTests: XCTestCase {
         XCTAssertEqual(bars.count, 2)
         XCTAssertEqual(bars.map(\.close), [100.0, 102.5])
         XCTAssertEqual(bars.first?.date, Date(timeIntervalSince1970: 1704067200))
+    }
+
+    func testLocalPriceHealthReportsProviderAndCoverage() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MarketPulseCoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let csv = """
+        Date,Open,High,Low,Close,Volume
+        2024-01-02,1,2,0.5,1.5,100
+        2024-01-03,1.5,2.5,1,2.0,110
+        """
+        try Data(csv.utf8).write(to: directory.appendingPathComponent("SPY.csv"))
+
+        let localFetcher = MarketDataFetcher(dataDirectory: directory, allowLocal: true)
+        let result = try await localFetcher.loadPricesWithHealth(symbol: "SPY")
+
+        XCTAssertEqual(result.health.source, "Local CSV")
+        XCTAssertEqual(result.health.rowCount, 2)
+        XCTAssertEqual(result.health.lastDate, "2024-01-03")
+        XCTAssertNil(result.health.note)
     }
 
     private func date(_ value: String) -> Date {

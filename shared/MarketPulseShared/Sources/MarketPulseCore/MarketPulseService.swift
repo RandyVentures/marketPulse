@@ -5,15 +5,18 @@ public struct MarketPulseConfiguration {
     public var allowLocal: Bool
     public var dataDirectory: URL?
     public var logFileURL: URL?
+    public var snapshotFileURL: URL?
 
     public init(
         allowLocal: Bool = false,
         dataDirectory: URL? = nil,
-        logFileURL: URL? = nil
+        logFileURL: URL? = nil,
+        snapshotFileURL: URL? = nil
     ) {
         self.allowLocal = allowLocal
         self.dataDirectory = dataDirectory
         self.logFileURL = logFileURL
+        self.snapshotFileURL = snapshotFileURL
     }
 
     public static var `default`: MarketPulseConfiguration {
@@ -37,7 +40,13 @@ public final class MarketPulseService: ObservableObject {
     private let engine = MarketPulseEngine()
     private var timer: Timer?
     private let logURL: URL?
+    private let snapshotURL: URL?
     private var cancellables = Set<AnyCancellable>()
+
+    private struct PersistedState: Codable {
+        let snapshot: MarketPulseSnapshot
+        let lastUpdated: Date
+    }
 
     public init(configuration: MarketPulseConfiguration = .default, settings: MarketPulseSettings) {
         self.fetcher = MarketDataFetcher(
@@ -45,8 +54,10 @@ public final class MarketPulseService: ObservableObject {
             allowLocal: configuration.allowLocal
         )
         self.logURL = configuration.logFileURL
+        self.snapshotURL = configuration.snapshotFileURL ?? Self.defaultSnapshotURL
         self.logPath = configuration.logFileURL?.path
         self.settings = settings
+        loadPersistedState()
         log("Initialized")
 
         settings.$refreshInterval
@@ -85,22 +96,34 @@ public final class MarketPulseService: ObservableObject {
         defer { isRefreshing = false }
         do {
             log("Refresh start")
-            async let spy = fetcher.loadPrices(symbol: "SPY")
-            async let rsp = fetcher.loadPrices(symbol: "RSP")
-            async let vix = fetcher.loadVix()
-            async let breadth = fetcher.loadBreadth()
+            async let spy = fetcher.loadPricesWithHealth(symbol: "SPY")
+            async let rsp = fetcher.loadPricesWithHealth(symbol: "RSP")
+            async let vix = fetcher.loadVixWithHealth()
+            async let breadth = fetcher.loadBreadthWithHealth()
+            let spyResult = try await spy
+            let rspResult = try await rsp
+            let vixResult = try await vix
+            let breadthResult = await breadth
             let snapshot = engine.buildSnapshot(
-                spy: try await spy,
-                rsp: try await rsp,
-                vix: try await vix,
-                breadth: try await breadth,
-                thresholds: settings.thresholds
+                spy: spyResult.values,
+                rsp: rspResult.values,
+                vix: vixResult.values,
+                breadth: breadthResult.values,
+                thresholds: settings.thresholds,
+                dataHealth: [
+                    spyResult.health,
+                    rspResult.health,
+                    vixResult.health,
+                    breadthResult.health
+                ]
             )
             self.snapshot = snapshot
             self.errorMessage = nil
             self.statusMessage = "OK"
-            self.lastUpdated = Date()
+            let refreshedAt = Date()
+            self.lastUpdated = refreshedAt
             self.isStale = false
+            persist(snapshot: snapshot, lastUpdated: refreshedAt)
             log("Refresh ok")
         } catch {
             self.errorMessage = error.localizedDescription
@@ -116,6 +139,41 @@ public final class MarketPulseService: ObservableObject {
             return
         }
         isStale = now.timeIntervalSince(lastUpdated) > settings.refreshInterval
+    }
+
+    private static var defaultSnapshotURL: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("MarketPulse", isDirectory: true)
+            .appendingPathComponent("snapshot.json")
+    }
+
+    private func loadPersistedState() {
+        guard let snapshotURL, FileManager.default.fileExists(atPath: snapshotURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: snapshotURL)
+            let state = try JSONDecoder().decode(PersistedState.self, from: data)
+            snapshot = state.snapshot
+            lastUpdated = state.lastUpdated
+            statusMessage = "Cached"
+        } catch {
+            log("Cached snapshot load failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func persist(snapshot: MarketPulseSnapshot, lastUpdated: Date) {
+        guard let snapshotURL else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: snapshotURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let state = PersistedState(snapshot: snapshot, lastUpdated: lastUpdated)
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: snapshotURL, options: .atomic)
+        } catch {
+            log("Snapshot persistence failed: \(error.localizedDescription)")
+        }
     }
 
     private func log(_ message: String) {

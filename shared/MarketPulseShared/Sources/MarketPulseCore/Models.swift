@@ -7,26 +7,73 @@ public enum Vote: String, Codable {
     case na = "N/A"
 }
 
-public struct Signal: Identifiable {
-    public let id = UUID()
+public struct Signal: Identifiable, Codable {
+    public let id: UUID
     public let name: String
     public let vote: Vote
     public let detail: String
 
     public init(name: String, vote: Vote, detail: String) {
+        self.id = UUID()
         self.name = name
         self.vote = vote
         self.detail = detail
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case vote
+        case detail
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decode(String.self, forKey: .name)
+        vote = try container.decode(Vote.self, forKey: .vote)
+        detail = try container.decode(String.self, forKey: .detail)
+    }
 }
 
-public struct MarketPulseSnapshot {
+public struct MarketPulseDataHealth: Codable, Equatable, Identifiable {
+    public let label: String
+    public let source: String
+    public let rowCount: Int
+    public let lastDate: String?
+    public let note: String?
+
+    public init(
+        label: String,
+        source: String,
+        rowCount: Int,
+        lastDate: String? = nil,
+        note: String? = nil
+    ) {
+        self.label = label
+        self.source = source
+        self.rowCount = rowCount
+        self.lastDate = lastDate
+        self.note = note
+    }
+
+    public var isAvailable: Bool {
+        rowCount > 0
+    }
+
+    public var id: String {
+        label
+    }
+}
+
+public struct MarketPulseSnapshot: Codable {
     public let asOf: String
     public let score: Int
     public let label: Vote
     public let signals: [Signal]
     public let conflicts: [String]
     public let extras: [String: String]
+    public let dataHealth: [MarketPulseDataHealth]
 
     public init(
         asOf: String,
@@ -34,7 +81,8 @@ public struct MarketPulseSnapshot {
         label: Vote,
         signals: [Signal],
         conflicts: [String],
-        extras: [String: String]
+        extras: [String: String],
+        dataHealth: [MarketPulseDataHealth] = []
     ) {
         self.asOf = asOf
         self.score = score
@@ -42,6 +90,28 @@ public struct MarketPulseSnapshot {
         self.signals = signals
         self.conflicts = conflicts
         self.extras = extras
+        self.dataHealth = dataHealth
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case asOf
+        case score
+        case label
+        case signals
+        case conflicts
+        case extras
+        case dataHealth
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        asOf = try container.decode(String.self, forKey: .asOf)
+        score = try container.decode(Int.self, forKey: .score)
+        label = try container.decode(Vote.self, forKey: .label)
+        signals = try container.decode([Signal].self, forKey: .signals)
+        conflicts = try container.decode([String].self, forKey: .conflicts)
+        extras = try container.decode([String: String].self, forKey: .extras)
+        dataHealth = try container.decodeIfPresent([MarketPulseDataHealth].self, forKey: .dataHealth) ?? []
     }
 }
 

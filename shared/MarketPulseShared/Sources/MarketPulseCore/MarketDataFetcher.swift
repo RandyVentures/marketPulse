@@ -19,31 +19,53 @@ public struct ProviderChainError: Error, LocalizedError {
     }
 }
 
+private struct ProviderFailure {
+    let provider: String
+    let message: String
+}
+
 private struct ProviderChain<Value> {
-    typealias Provider = () async throws -> Value?
+    struct Provider {
+        let name: String
+        let load: () async throws -> Value?
+
+        init(name: String, load: @escaping () async throws -> Value?) {
+            self.name = name
+            self.load = load
+        }
+    }
+
+    struct Result {
+        let value: Value
+        let provider: String
+        let failures: [ProviderFailure]
+    }
 
     let label: String
     let providers: [Provider]
     let isUsable: (Value) -> Bool
 
-    func load() async throws -> Value {
-        var errors: [String] = []
+    func load() async throws -> Result {
+        var failures: [ProviderFailure] = []
         for provider in providers {
             do {
-                guard let value = try await provider() else {
-                    errors.append("no data returned")
+                guard let value = try await provider.load() else {
+                    failures.append(ProviderFailure(provider: provider.name, message: "no data returned"))
                     continue
                 }
                 guard isUsable(value) else {
-                    errors.append("no data returned")
+                    failures.append(ProviderFailure(provider: provider.name, message: "no data returned"))
                     continue
                 }
-                return value
+                return Result(value: value, provider: provider.name, failures: failures)
             } catch {
-                errors.append(error.localizedDescription)
+                failures.append(ProviderFailure(provider: provider.name, message: error.localizedDescription))
             }
         }
-        throw ProviderChainError(label: label, errors: errors)
+        throw ProviderChainError(
+            label: label,
+            errors: failures.map { "\($0.provider): \($0.message)" }
+        )
     }
 }
 
@@ -82,41 +104,101 @@ public final class MarketDataFetcher {
     }
 
     public func loadPrices(symbol: String) async throws -> [PriceBar] {
-        try await ProviderChain(
+        try await loadPricesWithHealth(symbol: symbol).values
+    }
+
+    func loadPricesWithHealth(symbol: String) async throws -> (values: [PriceBar], health: MarketPulseDataHealth) {
+        let result = try await ProviderChain<[PriceBar]>(
             label: "Market data \(symbol.uppercased())",
             providers: [
-                { try self.loadLocalPrices(symbol: symbol) },
-                { try await self.fetchStooq(symbol: symbol) },
-                { try await self.fetchYahoo(symbol: symbol) }
+                ProviderChain<[PriceBar]>.Provider(name: "Local CSV") {
+                    try self.loadLocalPrices(symbol: symbol)
+                },
+                ProviderChain<[PriceBar]>.Provider(name: "Stooq") {
+                    try await self.fetchStooq(symbol: symbol)
+                },
+                ProviderChain<[PriceBar]>.Provider(name: "Yahoo Finance") {
+                    try await self.fetchYahoo(symbol: symbol)
+                }
             ],
             isUsable: { !$0.isEmpty }
         ).load()
+        return (
+            result.value,
+            makeHealth(
+                label: "\(symbol.uppercased()) prices",
+                source: result.provider,
+                rowCount: result.value.count,
+                lastDate: result.value.last?.date,
+                failures: result.failures
+            )
+        )
     }
 
     public func loadVix() async throws -> [VixPoint] {
-        try await ProviderChain(
+        try await loadVixWithHealth().values
+    }
+
+    func loadVixWithHealth() async throws -> (values: [VixPoint], health: MarketPulseDataHealth) {
+        let result = try await ProviderChain<[VixPoint]>(
             label: "VIX data",
             providers: [
-                { try self.loadLocalVix() },
-                { try await self.fetchFredVix() }
+                ProviderChain<[VixPoint]>.Provider(name: "Local CSV") {
+                    try self.loadLocalVix()
+                },
+                ProviderChain<[VixPoint]>.Provider(name: "FRED") {
+                    try await self.fetchFredVix()
+                }
             ],
             isUsable: { !$0.isEmpty }
         ).load()
+        return (
+            result.value,
+            makeHealth(
+                label: "VIX",
+                source: result.provider,
+                rowCount: result.value.count,
+                lastDate: result.value.last?.date,
+                failures: result.failures
+            )
+        )
     }
 
     public func loadBreadth() async throws -> [BreadthPoint]? {
+        await loadBreadthWithHealth().values
+    }
+
+    func loadBreadthWithHealth() async -> (values: [BreadthPoint]?, health: MarketPulseDataHealth) {
         do {
-            return try await ProviderChain(
+            let result = try await ProviderChain<[BreadthPoint]>(
                 label: "Breadth data",
                 providers: [
-                    { try self.loadLocalBreadth() }
+                    ProviderChain<[BreadthPoint]>.Provider(name: "Local CSV") {
+                        try self.loadLocalBreadth()
+                    }
                 ],
                 isUsable: { !$0.isEmpty }
             ).load()
+            return (
+                result.value,
+                makeHealth(
+                    label: "Breadth",
+                    source: result.provider,
+                    rowCount: result.value.count,
+                    lastDate: result.value.last?.date,
+                    failures: result.failures
+                )
+            )
         } catch {
-            // Breadth is optional in the Python implementation; lack of a local
-            // file should not prevent the rest of the snapshot from loading.
-            return nil
+            return (
+                nil,
+                MarketPulseDataHealth(
+                    label: "Breadth",
+                    source: "Unavailable",
+                    rowCount: 0,
+                    note: error.localizedDescription
+                )
+            )
         }
     }
 
@@ -156,6 +238,32 @@ public final class MarketDataFetcher {
         }
         let content = try String(contentsOf: path, encoding: .utf8)
         return parseBreadthCSV(content)
+    }
+
+    private func makeHealth(
+        label: String,
+        source: String,
+        rowCount: Int,
+        lastDate: Date?,
+        failures: [ProviderFailure]
+    ) -> MarketPulseDataHealth {
+        let networkFailures = failures.filter { $0.provider != "Local CSV" }
+        let note: String?
+        if networkFailures.isEmpty {
+            note = nil
+        } else {
+            let details = networkFailures
+                .map { "\($0.provider): \($0.message)" }
+                .joined(separator: "; ")
+            note = "Fallback used after \(details)"
+        }
+        return MarketPulseDataHealth(
+            label: label,
+            source: source,
+            rowCount: rowCount,
+            lastDate: lastDate.map { dateFormatter.string(from: $0) },
+            note: note
+        )
     }
 
     private func fetchStooq(symbol: String) async throws -> [PriceBar] {
