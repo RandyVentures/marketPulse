@@ -7,7 +7,8 @@ public final class MarketPulseEngine {
         spy: [PriceBar],
         rsp: [PriceBar],
         vix: [VixPoint],
-        breadth: [BreadthPoint]?
+        breadth: [BreadthPoint]?,
+        thresholds: MarketPulseThresholds = .default
     ) -> MarketPulseSnapshot {
         let weekly = weeklySeries(prices: spy)
         let weeklyClose = weekly.map { $0.close }
@@ -39,9 +40,9 @@ public final class MarketPulseEngine {
 
         let vixValue = vix.last?.value ?? 0
         let vixVote: Vote
-        if vixValue < 20 {
+        if vixValue < thresholds.vixBull {
             vixVote = .bull
-        } else if vixValue <= 25 {
+        } else if vixValue <= thresholds.vixNeutral {
             vixVote = .neutral
         } else {
             vixVote = .bear
@@ -104,7 +105,7 @@ public final class MarketPulseEngine {
         }
 
         let signals = [macdSignal, maSignal, emaSignal] + breadthSignals + [vixSignal, ratioSignal]
-        let (score, label) = scoreSignals(signals)
+        let (score, label) = scoreSignals(signals, thresholds: thresholds)
         let asOfDate = max(spy.last?.date ?? Date.distantPast, vix.last?.date ?? Date.distantPast)
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
@@ -116,7 +117,8 @@ public final class MarketPulseEngine {
             "rsp_spy": String(format: "%.4f", ratioValues.last ?? 0)
         ]
 
-        return MarketPulseSnapshot(asOf: asOf, score: score, label: label, signals: signals, conflicts: [], extras: extras)
+        let conflicts = detectConflicts(signals)
+        return MarketPulseSnapshot(asOf: asOf, score: score, label: label, signals: signals, conflicts: conflicts, extras: extras)
     }
 
     private func weeklySeries(prices: [PriceBar]) -> [PriceBar] {
@@ -147,19 +149,45 @@ public final class MarketPulseEngine {
         return ratioBars.sorted { $0.date < $1.date }
     }
 
-    private func scoreSignals(_ signals: [Signal]) -> (Int, Vote) {
+    private func scoreSignals(_ signals: [Signal], thresholds: MarketPulseThresholds) -> (Int, Vote) {
         let scoreMap: [Vote: Int] = [.bull: 1, .bear: -1, .neutral: 0, .na: 0]
         let raw = signals.reduce(0) { $0 + (scoreMap[$1.vote] ?? 0) }
         let maxScore = max(signals.count, 1)
         let normalized = Int(round(Double(raw + maxScore) / Double(2 * maxScore) * 100))
         let label: Vote
-        if normalized >= 60 {
+        if normalized >= thresholds.scoreBull {
             label = .bull
-        } else if normalized >= 40 {
+        } else if normalized >= thresholds.scoreNeutral {
             label = .neutral
         } else {
             label = .bear
         }
         return (normalized, label)
+    }
+
+    private func detectConflicts(_ signals: [Signal]) -> [String] {
+        let trendNames: Set<String> = [
+            "Weekly MACD",
+            "8/21 Weekly MA",
+            "8W EMA Slope"
+        ]
+        let breadthNames: Set<String> = [
+            "Cum A/D vs 89-EMA",
+            "NHNL Cum vs 10-MA",
+            "NYSI Slope"
+        ]
+
+        let trendVotes = signals.filter { trendNames.contains($0.name) }.map(\.vote)
+        let breadthVotes = signals.filter { breadthNames.contains($0.name) }.map(\.vote)
+        guard !trendVotes.isEmpty, !breadthVotes.isEmpty else { return [] }
+
+        var conflicts: [String] = []
+        if trendVotes.allSatisfy({ $0 == .bull }) && breadthVotes.contains(.bear) {
+            conflicts.append("Trend bullish but breadth weakening")
+        }
+        if trendVotes.allSatisfy({ $0 == .bear }) && breadthVotes.contains(.bull) {
+            conflicts.append("Trend bearish but breadth improving")
+        }
+        return conflicts
     }
 }

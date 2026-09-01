@@ -1,5 +1,69 @@
 import Foundation
 
+public struct ProviderChainError: Error, LocalizedError {
+    public let label: String
+    public let errors: [String]
+
+    public init(label: String, errors: [String]) {
+        self.label = label
+        self.errors = errors
+    }
+
+    public var lastError: String {
+        errors.last ?? "no data returned"
+    }
+
+    public var errorDescription: String? {
+        let details = errors.isEmpty ? "no data returned" : errors.joined(separator: "; ")
+        return "\(label) failed: \(details)"
+    }
+}
+
+private struct ProviderChain<Value> {
+    typealias Provider = () async throws -> Value?
+
+    let label: String
+    let providers: [Provider]
+    let isUsable: (Value) -> Bool
+
+    func load() async throws -> Value {
+        var errors: [String] = []
+        for provider in providers {
+            do {
+                guard let value = try await provider() else {
+                    errors.append("no data returned")
+                    continue
+                }
+                guard isUsable(value) else {
+                    errors.append("no data returned")
+                    continue
+                }
+                return value
+            } catch {
+                errors.append(error.localizedDescription)
+            }
+        }
+        throw ProviderChainError(label: label, errors: errors)
+    }
+}
+
+private enum MarketDataError: Error, LocalizedError {
+    case invalidResponse
+    case httpStatus(Int)
+    case invalidPayload(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "Invalid response"
+        case let .httpStatus(statusCode):
+            return "HTTP status \(statusCode)"
+        case let .invalidPayload(message):
+            return message
+        }
+    }
+}
+
 public final class MarketDataFetcher {
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -18,21 +82,42 @@ public final class MarketDataFetcher {
     }
 
     public func loadPrices(symbol: String) async throws -> [PriceBar] {
-        if let local = try loadLocalPrices(symbol: symbol) {
-            return local
-        }
-        return try await fetchStooq(symbol: symbol)
+        try await ProviderChain(
+            label: "Market data \(symbol.uppercased())",
+            providers: [
+                { try self.loadLocalPrices(symbol: symbol) },
+                { try await self.fetchStooq(symbol: symbol) },
+                { try await self.fetchYahoo(symbol: symbol) }
+            ],
+            isUsable: { !$0.isEmpty }
+        ).load()
     }
 
     public func loadVix() async throws -> [VixPoint] {
-        if let local = try loadLocalVix() {
-            return local
-        }
-        return try await fetchFredVix()
+        try await ProviderChain(
+            label: "VIX data",
+            providers: [
+                { try self.loadLocalVix() },
+                { try await self.fetchFredVix() }
+            ],
+            isUsable: { !$0.isEmpty }
+        ).load()
     }
 
     public func loadBreadth() async throws -> [BreadthPoint]? {
-        return try loadLocalBreadth()
+        do {
+            return try await ProviderChain(
+                label: "Breadth data",
+                providers: [
+                    { try self.loadLocalBreadth() }
+                ],
+                isUsable: { !$0.isEmpty }
+            ).load()
+        } catch {
+            // Breadth is optional in the Python implementation; lack of a local
+            // file should not prevent the rest of the snapshot from loading.
+            return nil
+        }
     }
 
     private func localURL(filename: String) -> URL? {
@@ -76,42 +161,68 @@ public final class MarketDataFetcher {
     private func fetchStooq(symbol: String) async throws -> [PriceBar] {
         let ticker = symbol.lowercased() + ".us"
         let url = URL(string: "https://stooq.com/q/d/l/?s=\(ticker)&i=d")!
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try validate(response)
         let content = String(data: data, encoding: .utf8) ?? ""
         return parseStooqCSV(content)
     }
 
     private func fetchFredVix() async throws -> [VixPoint] {
         let url = URL(string: "https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS")!
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try validate(response)
         let content = String(data: data, encoding: .utf8) ?? ""
         return parseVixCSV(content)
     }
 
-    private func parseStooqCSV(_ content: String) -> [PriceBar] {
-        let lines = content.split(whereSeparator: \ .isNewline)
+    private func fetchYahoo(symbol: String) async throws -> [PriceBar] {
+        let encodedSymbol = symbol.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? symbol
+        var components = URLComponents(string: "https://query1.finance.yahoo.com/v8/finance/chart/\(encodedSymbol)")
+        components?.queryItems = [
+            URLQueryItem(name: "range", value: "2y"),
+            URLQueryItem(name: "interval", value: "1d")
+        ]
+        guard let url = components?.url else {
+            throw MarketDataError.invalidPayload("Invalid Yahoo Finance URL")
+        }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try validate(response)
+        return try parseYahooChartJSON(data)
+    }
+
+    private func validate(_ response: URLResponse) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw MarketDataError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw MarketDataError.httpStatus(httpResponse.statusCode)
+        }
+    }
+
+    func parseStooqCSV(_ content: String) -> [PriceBar] {
+        let lines = content.split(whereSeparator: \.isNewline)
         guard lines.count > 1 else { return [] }
         var bars: [PriceBar] = []
         for line in lines.dropFirst() {
-            let parts = line.split(separator: ",")
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
             guard parts.count >= 5 else { continue }
-            let dateStr = String(parts[0])
-            let closeStr = String(parts[4])
+            let dateStr = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let closeStr = String(parts[4]).trimmingCharacters(in: .whitespacesAndNewlines)
             guard let date = dateFormatter.date(from: dateStr), let close = Double(closeStr) else { continue }
             bars.append(PriceBar(date: date, close: close))
         }
         return bars.sorted { $0.date < $1.date }
     }
 
-    private func parseVixCSV(_ content: String) -> [VixPoint] {
-        let lines = content.split(whereSeparator: \ .isNewline)
+    func parseVixCSV(_ content: String) -> [VixPoint] {
+        let lines = content.split(whereSeparator: \.isNewline)
         guard lines.count > 1 else { return [] }
         var points: [VixPoint] = []
         for line in lines.dropFirst() {
-            let parts = line.split(separator: ",")
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false)
             guard parts.count >= 2 else { continue }
-            let dateStr = String(parts[0])
-            let valueStr = String(parts[1])
+            let dateStr = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let valueStr = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
             if valueStr == "." { continue }
             guard let date = dateFormatter.date(from: dateStr), let value = Double(valueStr) else { continue }
             points.append(VixPoint(date: date, value: value))
@@ -119,10 +230,12 @@ public final class MarketDataFetcher {
         return points.sorted { $0.date < $1.date }
     }
 
-    private func parseBreadthCSV(_ content: String) -> [BreadthPoint] {
-        let lines = content.split(whereSeparator: \ .isNewline)
+    func parseBreadthCSV(_ content: String) -> [BreadthPoint] {
+        let lines = content.split(whereSeparator: \.isNewline)
         guard lines.count > 1 else { return [] }
-        let header = lines.first?.split(separator: ",").map { $0.lowercased() } ?? []
+        let header = lines.first?.split(separator: ",").map {
+            String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        } ?? []
         let dateIdx = header.firstIndex(of: "date")
         let advIdx = header.firstIndex(of: "advances")
         let decIdx = header.firstIndex(of: "declines")
@@ -147,4 +260,55 @@ public final class MarketDataFetcher {
         }
         return points.sorted { $0.date < $1.date }
     }
+
+    func parseYahooChartJSON(_ data: Data) throws -> [PriceBar] {
+        let payload: YahooChartPayload
+        do {
+            payload = try JSONDecoder().decode(YahooChartPayload.self, from: data)
+        } catch {
+            throw MarketDataError.invalidPayload("Invalid Yahoo Finance payload: \(error.localizedDescription)")
+        }
+
+        guard let result = payload.chart.result?.first else {
+            let message = payload.chart.error?.description ?? "Yahoo Finance returned no data"
+            throw MarketDataError.invalidPayload(message)
+        }
+        guard let timestamps = result.timestamp, let quotes = result.indicators.quote.first,
+              let closes = quotes.close else {
+            throw MarketDataError.invalidPayload("Yahoo Finance returned no price series")
+        }
+
+        var bars: [PriceBar] = []
+        for (timestamp, close) in zip(timestamps, closes) {
+            guard let close, close.isFinite else { continue }
+            bars.append(PriceBar(date: Date(timeIntervalSince1970: TimeInterval(timestamp)), close: close))
+        }
+        return bars.sorted { $0.date < $1.date }
+    }
+}
+
+private struct YahooChartPayload: Decodable {
+    let chart: YahooChart
+}
+
+private struct YahooChart: Decodable {
+    let result: [YahooChartResult]?
+    let error: YahooChartError?
+}
+
+private struct YahooChartResult: Decodable {
+    let timestamp: [Int64]?
+    let indicators: YahooIndicators
+}
+
+private struct YahooIndicators: Decodable {
+    let quote: [YahooQuote]
+}
+
+private struct YahooQuote: Decodable {
+    let close: [Double?]?
+}
+
+private struct YahooChartError: Decodable {
+    let description: String?
 }

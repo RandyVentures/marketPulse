@@ -14,6 +14,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "MarketPulseCore"),
-        .target(name: "MarketPulseUI", dependencies: ["MarketPulseCore"])
+        .target(name: "MarketPulseUI", dependencies: ["MarketPulseCore"]),
+        .testTarget(name: "MarketPulseCoreTests", dependencies: ["MarketPulseCore"])
     ]
 )

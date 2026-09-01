@@ -4,10 +4,11 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var service: MarketPulseService
+    @State private var showSettings = false
 
     init() {
-        let config = MarketPulseConfiguration(refreshInterval: 300, allowLocal: false)
-        _service = StateObject(wrappedValue: MarketPulseService(configuration: config))
+        let config = MarketPulseConfiguration(allowLocal: false)
+        _service = StateObject(wrappedValue: MarketPulseService(configuration: config, settings: MarketPulseSettings()))
     }
 
     var body: some View {
@@ -16,7 +17,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if let snapshot = service.snapshot {
                         SectionContainer {
-                            MenuHeaderView(snapshot: snapshot, lastUpdated: service.lastUpdated)
+                            MenuHeaderView(snapshot: snapshot, lastUpdated: service.lastUpdated, isStale: service.isStale)
                         }
                         SnapshotSignalsView(snapshot: snapshot)
                     } else {
@@ -60,9 +61,23 @@ struct ContentView: View {
                     }
                     .disabled(service.isRefreshing)
                 }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                }
             }
             .refreshable {
                 await service.refresh()
+            }
+            .sheet(isPresented: $showSettings) {
+                NavigationStack {
+                    SettingsView(settings: service.settings, onDone: { showSettings = false })
+                        .padding(16)
+                }
+                .presentationDetents([.medium, .large])
             }
         }
         .task {

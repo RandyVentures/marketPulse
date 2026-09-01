@@ -6,23 +6,24 @@ import SwiftUI
 @main
 struct MarketPulseBarApp: App {
     @StateObject private var service: MarketPulseService
+    @State private var showSettings = false
+
+    private static let dataDir = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent(".marketpulse")
+        .appendingPathComponent("data")
 
     init() {
-        let dataDir = FileManager.default
-            .homeDirectoryForCurrentUser
-            .appendingPathComponent(".marketpulse")
-            .appendingPathComponent("data")
         let logsDir = FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent("Library")
             .appendingPathComponent("Logs")
         let config = MarketPulseConfiguration(
-            refreshInterval: 300,
             allowLocal: true,
-            dataDirectory: dataDir,
+            dataDirectory: Self.dataDir,
             logFileURL: logsDir.appendingPathComponent("MarketPulseBar.log")
         )
-        let service = MarketPulseService(configuration: config)
+        let service = MarketPulseService(configuration: config, settings: MarketPulseSettings())
         _service = StateObject(wrappedValue: service)
         service.start()
     }
@@ -30,39 +31,58 @@ struct MarketPulseBarApp: App {
     var body: some Scene {
         MenuBarExtra {
             VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showSettings.toggle()
+                        }
+                    } label: {
+                        Image(systemName: showSettings ? "xmark.circle" : "gearshape")
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if let snapshot = service.snapshot {
-                            SectionContainer {
-                                MenuHeaderView(snapshot: snapshot, lastUpdated: service.lastUpdated)
-                            }
-                            SnapshotSignalsView(snapshot: snapshot)
-                        } else {
-                            SectionContainer {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("No data yet")
-                                        .font(.headline)
-                                    if let lastUpdated = service.lastUpdated {
-                                        Text("Last update: \(lastUpdated.formatted(date: .omitted, time: .shortened))")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    if let status = service.statusMessage {
-                                        Text("Status: \(status)")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    if let errorMessage = service.errorMessage {
-                                        Text(errorMessage)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .fixedSize(horizontal: false, vertical: true)
+                    if showSettings {
+                        SettingsView(settings: service.settings)
+                            .padding(10)
+                    } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if let snapshot = service.snapshot {
+                                SectionContainer {
+                                    MenuHeaderView(snapshot: snapshot, lastUpdated: service.lastUpdated, isStale: service.isStale)
+                                }
+                                SnapshotSignalsView(snapshot: snapshot)
+                            } else {
+                                SectionContainer {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text("No data yet")
+                                            .font(.headline)
+                                        if let lastUpdated = service.lastUpdated {
+                                            Text("Last update: \(lastUpdated.formatted(date: .omitted, time: .shortened))")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        if let status = service.statusMessage {
+                                            Text("Status: \(status)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        if let errorMessage = service.errorMessage {
+                                            Text(errorMessage)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
                                     }
                                 }
                             }
                         }
+                        .padding(10)
                     }
-                    .padding(10)
                 }
                 Divider()
                 HStack(spacing: 12) {
@@ -81,11 +101,11 @@ struct MarketPulseBarApp: App {
                     }
                     .disabled(service.isRefreshing)
                     Button("Data Folder") {
-                        let path = FileManager.default
-                            .homeDirectoryForCurrentUser
-                            .appendingPathComponent(".marketpulse")
-                            .appendingPathComponent("data")
-                        NSWorkspace.shared.open(path)
+                        try? FileManager.default.createDirectory(
+                            at: Self.dataDir,
+                            withIntermediateDirectories: true
+                        )
+                        NSWorkspace.shared.open(Self.dataDir)
                     }
                     Spacer()
                     Button("Quit") {
@@ -96,7 +116,12 @@ struct MarketPulseBarApp: App {
             }
             .frame(width: 320, height: 420)
         } label: {
-            Text(menuTitle)
+            HStack(spacing: 4) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(menuDotColor)
+                Text(menuTitle)
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -106,5 +131,9 @@ struct MarketPulseBarApp: App {
             return "MP \(snapshot.label.rawValue) \(snapshot.score)"
         }
         return "MP --"
+    }
+
+    private var menuDotColor: Color {
+        service.snapshot?.label.color ?? .gray
     }
 }

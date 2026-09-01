@@ -80,3 +80,24 @@ public struct BreadthPoint {
         self.newLows = newLows
     }
 }
+
+public struct MarketPulseThresholds: Equatable {
+    public var scoreBull: Int
+    public var scoreNeutral: Int
+    public var vixBull: Double
+    public var vixNeutral: Double
+
+    public init(
+        scoreBull: Int = 60,
+        scoreNeutral: Int = 40,
+        vixBull: Double = 20,
+        vixNeutral: Double = 25
+    ) {
+        self.scoreBull = scoreBull
+        self.scoreNeutral = scoreNeutral
+        self.vixBull = vixBull
+        self.vixNeutral = vixNeutral
+    }
+
+    public static let `default` = MarketPulseThresholds()
+}

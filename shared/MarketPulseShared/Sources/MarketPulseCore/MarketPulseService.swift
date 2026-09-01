@@ -2,18 +2,15 @@ import Combine
 import Foundation
 
 public struct MarketPulseConfiguration {
-    public var refreshInterval: TimeInterval
     public var allowLocal: Bool
     public var dataDirectory: URL?
     public var logFileURL: URL?
 
     public init(
-        refreshInterval: TimeInterval = 300,
         allowLocal: Bool = false,
         dataDirectory: URL? = nil,
         logFileURL: URL? = nil
     ) {
-        self.refreshInterval = refreshInterval
         self.allowLocal = allowLocal
         self.dataDirectory = dataDirectory
         self.logFileURL = logFileURL
@@ -32,30 +29,45 @@ public final class MarketPulseService: ObservableObject {
     @Published public var statusMessage: String?
     @Published public var logPath: String?
     @Published public var isRefreshing = false
+    @Published public var isStale = false
+
+    public let settings: MarketPulseSettings
 
     private let fetcher: MarketDataFetcher
     private let engine = MarketPulseEngine()
     private var timer: Timer?
     private let logURL: URL?
-    private let refreshInterval: TimeInterval
+    private var cancellables = Set<AnyCancellable>()
 
-    public init(configuration: MarketPulseConfiguration = .default) {
+    public init(configuration: MarketPulseConfiguration = .default, settings: MarketPulseSettings) {
         self.fetcher = MarketDataFetcher(
             dataDirectory: configuration.dataDirectory,
             allowLocal: configuration.allowLocal
         )
         self.logURL = configuration.logFileURL
         self.logPath = configuration.logFileURL?.path
-        self.refreshInterval = configuration.refreshInterval
+        self.settings = settings
         log("Initialized")
+
+        settings.$refreshInterval
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.updateStaleState()
+                self?.restartTimer()
+            }
+            .store(in: &cancellables)
     }
 
     public func start() {
-        timer?.invalidate()
         Task { await refresh() }
-        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { _ in
+        restartTimer()
+    }
+
+    private func restartTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: settings.refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self.refresh()
+                await self?.refresh()
             }
         }
     }
@@ -81,20 +93,29 @@ public final class MarketPulseService: ObservableObject {
                 spy: try await spy,
                 rsp: try await rsp,
                 vix: try await vix,
-                breadth: try await breadth
+                breadth: try await breadth,
+                thresholds: settings.thresholds
             )
             self.snapshot = snapshot
             self.errorMessage = nil
             self.statusMessage = "OK"
             self.lastUpdated = Date()
+            self.isStale = false
             log("Refresh ok")
         } catch {
-            self.snapshot = nil
             self.errorMessage = error.localizedDescription
             self.statusMessage = "Failed"
-            self.lastUpdated = Date()
+            self.updateStaleState()
             log("Refresh failed: \(error.localizedDescription)")
         }
+    }
+
+    private func updateStaleState(now: Date = Date()) {
+        guard errorMessage != nil, let lastUpdated else {
+            isStale = false
+            return
+        }
+        isStale = now.timeIntervalSince(lastUpdated) > settings.refreshInterval
     }
 
     private func log(_ message: String) {
